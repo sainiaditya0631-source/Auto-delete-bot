@@ -2,7 +2,7 @@ import os
 import asyncio
 import json
 from datetime import datetime
-from pyrogram import Client, filters, idle
+from pyrogram import Client, filters
 from pyrogram.types import Message
 
 API_ID       = int(os.getenv("API_ID", "0"))
@@ -29,7 +29,6 @@ protected     = data.get("protected", {})
 whitelist     = data.get("whitelist", {})
 active_groups = set(data.get("active_groups", []))
 
-
 def save_all():
     save_data({
         "protected":     protected,
@@ -37,18 +36,22 @@ def save_all():
         "active_groups": list(active_groups)
     })
 
-
 def is_protected(chat_id, msg_id):
     return str(chat_id) in protected and protected[str(chat_id)] == msg_id
 
 def is_whitelisted(chat_id, user_id):
+    if not user_id:
+        return False
     if user_id == OWNER_ID:
         return True
     return user_id in whitelist.get(str(chat_id), [])
 
-
-app = Client("userbot", api_id=API_ID, api_hash=API_HASH, session_string=SESSION)
-
+app = Client(
+    "userbot",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    session_string=SESSION
+)
 
 async def try_delete(chat_id, msg_id):
     if is_protected(chat_id, msg_id):
@@ -58,73 +61,71 @@ async def try_delete(chat_id, msg_id):
     except Exception:
         pass
 
-
 async def delayed_delete(chat_id, msg_id, user_id=0):
     await asyncio.sleep(DELETE_AFTER)
     if is_protected(chat_id, msg_id):
         return
-    if user_id and is_whitelisted(chat_id, user_id):
+    if is_whitelisted(chat_id, user_id):
         return
     await try_delete(chat_id, msg_id)
 
-
 async def notify(text):
+    """Owner ke Saved Messages mein bhejo."""
     try:
-        await app.send_message(OWNER_ID, text)
-    except:
-        pass
+        await app.send_message("me", text)
+    except Exception as e:
+        print(f"Notify error: {e}")
 
 
 # ══════════════════════════════════════════════════
-#  AUTO DELETE — SABKE MESSAGES (BOTS BHI!)
+#  AUTO DELETE
 # ══════════════════════════════════════════════════
 
-@app.on_message(filters.group & ~filters.command(
-    ["enable","disable","keep","unkeep","clean","settime","addwl","rmwl","wllist","status"]
-))
+COMMANDS = ["enable","disable","keep","unkeep","clean","settime","addwl","rmwl","wllist","status"]
+
+@app.on_message(filters.group & ~filters.command(COMMANDS))
 async def handle_all(client, msg: Message):
     chat_id = msg.chat.id
     if chat_id not in active_groups:
         return
-    msg_id  = msg.id
+    # Anonymous admin ya channel post ka from_user None hoga
     user_id = msg.from_user.id if msg.from_user else 0
-    asyncio.create_task(delayed_delete(chat_id, msg_id, user_id))
+    asyncio.create_task(delayed_delete(chat_id, msg.id, user_id))
 
 
 # ══════════════════════════════════════════════════
-#  COMMANDS — OWNER ONLY
+#  COMMANDS
 # ══════════════════════════════════════════════════
+
+def is_owner(msg: Message) -> bool:
+    return msg.from_user is not None and msg.from_user.id == OWNER_ID
+
 
 @app.on_message(filters.command("enable") & filters.group)
 async def cmd_enable(client, msg: Message):
-    if msg.from_user.id != OWNER_ID:
-        return
-    chat_id = msg.chat.id
-    active_groups.add(chat_id)
+    if not is_owner(msg): return
+    active_groups.add(msg.chat.id)
     save_all()
-    m = await msg.reply("✅ Auto-delete **ON** kiya is group mein!")
+    m = await msg.reply("✅ Auto-delete **ON** is group mein!")
     await asyncio.sleep(5)
-    await try_delete(chat_id, msg.id)
-    await try_delete(chat_id, m.id)
+    await try_delete(msg.chat.id, msg.id)
+    await try_delete(msg.chat.id, m.id)
 
 
 @app.on_message(filters.command("disable") & filters.group)
 async def cmd_disable(client, msg: Message):
-    if msg.from_user.id != OWNER_ID:
-        return
-    chat_id = msg.chat.id
-    active_groups.discard(chat_id)
+    if not is_owner(msg): return
+    active_groups.discard(msg.chat.id)
     save_all()
-    m = await msg.reply("❌ Auto-delete **OFF** kiya is group mein!")
+    m = await msg.reply("❌ Auto-delete **OFF** is group mein!")
     await asyncio.sleep(5)
-    await try_delete(chat_id, msg.id)
-    await try_delete(chat_id, m.id)
+    await try_delete(msg.chat.id, msg.id)
+    await try_delete(msg.chat.id, m.id)
 
 
 @app.on_message(filters.command("keep") & filters.group)
 async def cmd_keep(client, msg: Message):
-    if msg.from_user.id != OWNER_ID:
-        return
+    if not is_owner(msg): return
     await try_delete(msg.chat.id, msg.id)
     if not msg.reply_to_message:
         await notify("ℹ️ /keep — kisi message ke reply mein use karo.")
@@ -136,8 +137,7 @@ async def cmd_keep(client, msg: Message):
 
 @app.on_message(filters.command("unkeep") & filters.group)
 async def cmd_unkeep(client, msg: Message):
-    if msg.from_user.id != OWNER_ID:
-        return
+    if not is_owner(msg): return
     await try_delete(msg.chat.id, msg.id)
     key = str(msg.chat.id)
     if key in protected:
@@ -150,8 +150,7 @@ async def cmd_unkeep(client, msg: Message):
 
 @app.on_message(filters.command("clean") & filters.group)
 async def cmd_clean(client, msg: Message):
-    if msg.from_user.id != OWNER_ID:
-        return
+    if not is_owner(msg): return
     chat_id = msg.chat.id
     cur_id  = msg.id
     await try_delete(chat_id, cur_id)
@@ -172,8 +171,7 @@ async def cmd_clean(client, msg: Message):
 @app.on_message(filters.command("settime") & filters.group)
 async def cmd_settime(client, msg: Message):
     global DELETE_AFTER
-    if msg.from_user.id != OWNER_ID:
-        return
+    if not is_owner(msg): return
     await try_delete(msg.chat.id, msg.id)
     parts = msg.text.split()
     if len(parts) >= 2:
@@ -184,27 +182,19 @@ async def cmd_settime(client, msg: Message):
             return
         except:
             pass
-    await notify(
-        "⏱ Delete time set karo:\n"
-        "`/settime 30` → 30 seconds\n"
-        "`/settime 60` → 1 minute\n"
-        "`/settime 300` → 5 minutes"
-    )
+    await notify("⏱ Use: `/settime 60` (seconds mein)")
 
 
 @app.on_message(filters.command("addwl") & filters.group)
 async def cmd_addwl(client, msg: Message):
-    if msg.from_user.id != OWNER_ID:
-        return
+    if not is_owner(msg): return
     await try_delete(msg.chat.id, msg.id)
     target = None
     if msg.reply_to_message and msg.reply_to_message.from_user:
         target = msg.reply_to_message.from_user.id
     elif len(msg.text.split()) >= 2:
-        try:
-            target = int(msg.text.split()[1])
-        except:
-            pass
+        try: target = int(msg.text.split()[1])
+        except: pass
     if not target:
         await notify("ℹ️ Reply karke /addwl ya /addwl USER_ID")
         return
@@ -212,24 +202,21 @@ async def cmd_addwl(client, msg: Message):
     if target not in wl:
         wl.append(target)
         save_all()
-        await notify(f"✅ User `{target}` whitelist mein add!")
+        await notify(f"✅ User `{target}` whitelist mein!")
     else:
-        await notify(f"ℹ️ User `{target}` pehle se whitelist mein hai.")
+        await notify(f"ℹ️ User `{target}` pehle se hai.")
 
 
 @app.on_message(filters.command("rmwl") & filters.group)
 async def cmd_rmwl(client, msg: Message):
-    if msg.from_user.id != OWNER_ID:
-        return
+    if not is_owner(msg): return
     await try_delete(msg.chat.id, msg.id)
     target = None
     if msg.reply_to_message and msg.reply_to_message.from_user:
         target = msg.reply_to_message.from_user.id
     elif len(msg.text.split()) >= 2:
-        try:
-            target = int(msg.text.split()[1])
-        except:
-            pass
+        try: target = int(msg.text.split()[1])
+        except: pass
     if not target:
         await notify("ℹ️ Reply karke /rmwl ya /rmwl USER_ID")
         return
@@ -237,23 +224,22 @@ async def cmd_rmwl(client, msg: Message):
     if target in wl:
         wl.remove(target)
         save_all()
-        await notify(f"✅ User `{target}` whitelist se remove!")
+        await notify(f"✅ User `{target}` remove kiya.")
     else:
-        await notify(f"ℹ️ User `{target}` whitelist mein tha hi nahi.")
+        await notify(f"ℹ️ User `{target}` tha hi nahi.")
 
 
 @app.on_message(filters.command("status") & filters.group)
 async def cmd_status(client, msg: Message):
-    if msg.from_user.id != OWNER_ID:
-        return
+    if not is_owner(msg): return
     await try_delete(msg.chat.id, msg.id)
     chat_id = msg.chat.id
     pid = protected.get(str(chat_id))
     wl  = whitelist.get(str(chat_id), [])
     on  = "✅ ON" if chat_id in active_groups else "❌ OFF"
     await notify(
-        f"📊 **Bot Status**\n\n"
-        f"🔴 Auto-delete: **{on}**\n"
+        f"📊 **Status**\n\n"
+        f"Auto-delete: **{on}**\n"
         f"⏱ Timer: **{DELETE_AFTER}s**\n"
         f"🛡 Protected: `{pid or 'None'}`\n"
         f"✅ Whitelist: **{len(wl)} users**"
@@ -268,6 +254,6 @@ print(f"\n{'='*45}")
 print(f"  Userbot  |  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 print(f"  Owner: {OWNER_ID}  |  Delete: {DELETE_AFTER}s")
 print(f"{'='*45}\n")
+print("✅ Userbot running!")
 
 app.run()
-    
