@@ -2,7 +2,7 @@ import os
 import asyncio
 import json
 from datetime import datetime
-from pyrogram import Client, filters
+from pyrogram import Client, filters, idle
 from pyrogram.types import Message
 
 API_ID       = int(os.getenv("API_ID", "0"))
@@ -40,11 +40,12 @@ def is_protected(chat_id, msg_id):
     return str(chat_id) in protected and protected[str(chat_id)] == msg_id
 
 def is_whitelisted(chat_id, user_id):
-    if not user_id:
-        return False
-    if user_id == OWNER_ID:
-        return True
+    if not user_id: return False
+    if user_id == OWNER_ID: return True
     return user_id in whitelist.get(str(chat_id), [])
+
+def is_owner(msg: Message) -> bool:
+    return msg.from_user is not None and msg.from_user.id == OWNER_ID
 
 app = Client(
     "userbot",
@@ -70,25 +71,36 @@ async def delayed_delete(chat_id, msg_id, user_id=0):
     await try_delete(chat_id, msg_id)
 
 async def notify(text):
-    """Owner ke Saved Messages mein bhejo."""
     try:
         await app.send_message("me", text)
     except Exception as e:
-        print(f"Notify error: {e}")
+        print(f"[Notify] {e}")
+
+
+# ══════════════════════════════════════════════════
+#  STARTUP — Sabhi Groups Cache Karo
+# ══════════════════════════════════════════════════
+
+async def cache_all_peers():
+    """Startup pe saare dialogs load karo taaki Pyrogram peer IDs jaane."""
+    print("📦 Caching peers...")
+    count = 0
+    async for dialog in app.get_dialogs():
+        count += 1
+    print(f"✅ {count} dialogs cached!")
 
 
 # ══════════════════════════════════════════════════
 #  AUTO DELETE
 # ══════════════════════════════════════════════════
 
-COMMANDS = ["enable","disable","keep","unkeep","clean","settime","addwl","rmwl","wllist","status"]
+CMDS = ["enable","disable","keep","unkeep","clean","settime","addwl","rmwl","wllist","status"]
 
-@app.on_message(filters.group & ~filters.command(COMMANDS))
+@app.on_message(filters.group & ~filters.command(CMDS))
 async def handle_all(client, msg: Message):
     chat_id = msg.chat.id
     if chat_id not in active_groups:
         return
-    # Anonymous admin ya channel post ka from_user None hoga
     user_id = msg.from_user.id if msg.from_user else 0
     asyncio.create_task(delayed_delete(chat_id, msg.id, user_id))
 
@@ -97,16 +109,13 @@ async def handle_all(client, msg: Message):
 #  COMMANDS
 # ══════════════════════════════════════════════════
 
-def is_owner(msg: Message) -> bool:
-    return msg.from_user is not None and msg.from_user.id == OWNER_ID
-
-
 @app.on_message(filters.command("enable") & filters.group)
 async def cmd_enable(client, msg: Message):
     if not is_owner(msg): return
     active_groups.add(msg.chat.id)
     save_all()
-    m = await msg.reply("✅ Auto-delete **ON** is group mein!")
+    await notify(f"✅ Auto-delete **ON** kiya!\nGroup: `{msg.chat.id}`\nTimer: {DELETE_AFTER}s")
+    m = await msg.reply("✅ Auto-delete ON!")
     await asyncio.sleep(5)
     await try_delete(msg.chat.id, msg.id)
     await try_delete(msg.chat.id, m.id)
@@ -117,7 +126,8 @@ async def cmd_disable(client, msg: Message):
     if not is_owner(msg): return
     active_groups.discard(msg.chat.id)
     save_all()
-    m = await msg.reply("❌ Auto-delete **OFF** is group mein!")
+    await notify(f"❌ Auto-delete OFF kiya.\nGroup: `{msg.chat.id}`")
+    m = await msg.reply("❌ Auto-delete OFF!")
     await asyncio.sleep(5)
     await try_delete(msg.chat.id, msg.id)
     await try_delete(msg.chat.id, m.id)
@@ -182,7 +192,24 @@ async def cmd_settime(client, msg: Message):
             return
         except:
             pass
-    await notify("⏱ Use: `/settime 60` (seconds mein)")
+    await notify("⏱ Use: `/settime 60`")
+
+
+@app.on_message(filters.command("status") & filters.group)
+async def cmd_status(client, msg: Message):
+    if not is_owner(msg): return
+    await try_delete(msg.chat.id, msg.id)
+    chat_id = msg.chat.id
+    pid = protected.get(str(chat_id))
+    wl  = whitelist.get(str(chat_id), [])
+    on  = "✅ ON" if chat_id in active_groups else "❌ OFF"
+    await notify(
+        f"📊 **Status**\n\n"
+        f"Auto-delete: **{on}**\n"
+        f"⏱ Timer: **{DELETE_AFTER}s**\n"
+        f"🛡 Protected: `{pid or 'None'}`\n"
+        f"✅ Whitelist: **{len(wl)} users**"
+    )
 
 
 @app.on_message(filters.command("addwl") & filters.group)
@@ -204,7 +231,7 @@ async def cmd_addwl(client, msg: Message):
         save_all()
         await notify(f"✅ User `{target}` whitelist mein!")
     else:
-        await notify(f"ℹ️ User `{target}` pehle se hai.")
+        await notify(f"ℹ️ Pehle se hai: `{target}`")
 
 
 @app.on_message(filters.command("rmwl") & filters.group)
@@ -225,35 +252,30 @@ async def cmd_rmwl(client, msg: Message):
         wl.remove(target)
         save_all()
         await notify(f"✅ User `{target}` remove kiya.")
-    else:
-        await notify(f"ℹ️ User `{target}` tha hi nahi.")
-
-
-@app.on_message(filters.command("status") & filters.group)
-async def cmd_status(client, msg: Message):
-    if not is_owner(msg): return
-    await try_delete(msg.chat.id, msg.id)
-    chat_id = msg.chat.id
-    pid = protected.get(str(chat_id))
-    wl  = whitelist.get(str(chat_id), [])
-    on  = "✅ ON" if chat_id in active_groups else "❌ OFF"
-    await notify(
-        f"📊 **Status**\n\n"
-        f"Auto-delete: **{on}**\n"
-        f"⏱ Timer: **{DELETE_AFTER}s**\n"
-        f"🛡 Protected: `{pid or 'None'}`\n"
-        f"✅ Whitelist: **{len(wl)} users**"
-    )
 
 
 # ══════════════════════════════════════════════════
-#  START
+#  MAIN
 # ══════════════════════════════════════════════════
 
-print(f"\n{'='*45}")
-print(f"  Userbot  |  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-print(f"  Owner: {OWNER_ID}  |  Delete: {DELETE_AFTER}s")
-print(f"{'='*45}\n")
-print("✅ Userbot running!")
+async def main():
+    await app.start()
+    print(f"\n{'='*45}")
+    print(f"  Userbot  |  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"  Owner: {OWNER_ID}  |  Delete: {DELETE_AFTER}s")
+    print(f"{'='*45}")
 
-app.run()
+    # Sabhi peers cache karo
+    await cache_all_peers()
+
+    # Owner ko startup notification
+    await notify("🚀 Userbot start ho gaya!\n\nGroup mein `/enable` type karo.")
+
+    print("✅ Userbot running!\n")
+    await idle()
+    await app.stop()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+        
