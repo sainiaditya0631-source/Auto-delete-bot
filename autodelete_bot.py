@@ -9,8 +9,8 @@ from telegram.ext import (
 )
 
 BOT_TOKEN    = os.getenv("BOT_TOKEN")
-DELETE_AFTER = 60  # seconds
-OWNER_ID     = 6289856752  # Owner ka Telegram ID
+DELETE_AFTER = 60
+OWNER_ID     = 6289856752
 
 SAVE_FILE = "protected.json"
 
@@ -33,14 +33,11 @@ def is_protected(chat_id: int, msg_id: int) -> bool:
 
 
 async def is_allowed(update: Update, ctx) -> bool:
-    """Owner ya Admin — dono allowed hain."""
     user = update.effective_user
     if not user:
         return False
-    # Owner hamesha allowed
     if user.id == OWNER_ID:
         return True
-    # Admin check
     try:
         member = await ctx.bot.get_chat_member(
             update.effective_chat.id, user.id
@@ -64,120 +61,105 @@ async def delayed_delete(bot, chat_id: int, msg_id: int):
     await try_delete(bot, chat_id, msg_id)
 
 
+async def owner_notify(ctx, text: str):
+    """Owner ko private DM mein message bhejo."""
+    try:
+        await ctx.bot.send_message(OWNER_ID, text, parse_mode="HTML")
+    except Exception:
+        pass
+
+
 # ══════════════════════════════════════════════════
 #  COMMANDS
 # ══════════════════════════════════════════════════
 
 async def cmd_keep(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
+    await try_delete(ctx.bot, chat_id, update.message.message_id)
 
     if not await is_allowed(update, ctx):
-        asyncio.create_task(delayed_delete(ctx.bot, chat_id, update.message.message_id))
+        await owner_notify(ctx, "❌ Unauthorized /keep attempt")
         return
 
     if not update.message.reply_to_message:
-        m = await update.message.reply_text(
-            "ℹ️ Jis message ko protect karna hai uske reply mein /keep likho."
-        )
-        asyncio.create_task(delayed_delete(ctx.bot, chat_id, update.message.message_id))
-        asyncio.create_task(delayed_delete(ctx.bot, chat_id, m.message_id))
+        await owner_notify(ctx, "ℹ️ /keep — jis message ko protect karna hai uske reply mein /keep likho.")
         return
 
     target_id = update.message.reply_to_message.message_id
     protected[str(chat_id)] = target_id
     save_protected(protected)
-
-    m = await update.message.reply_text(
-        "✅ Message protect ho gaya! Yeh kabhi delete nahi hoga."
-    )
-    asyncio.create_task(delayed_delete(ctx.bot, chat_id, update.message.message_id))
-    asyncio.create_task(delayed_delete(ctx.bot, chat_id, m.message_id))
+    await owner_notify(ctx, f"✅ Message <code>{target_id}</code> protect ho gaya!")
 
 
 async def cmd_unkeep(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
+    await try_delete(ctx.bot, chat_id, update.message.message_id)
 
     if not await is_allowed(update, ctx):
-        asyncio.create_task(delayed_delete(ctx.bot, chat_id, update.message.message_id))
         return
 
     if str(chat_id) in protected:
         del protected[str(chat_id)]
         save_protected(protected)
-        m = await update.message.reply_text("✅ Protection hata di.")
+        await owner_notify(ctx, "✅ Protection hata di.")
     else:
-        m = await update.message.reply_text("ℹ️ Koi protected message nahi hai.")
-
-    asyncio.create_task(delayed_delete(ctx.bot, chat_id, update.message.message_id))
-    asyncio.create_task(delayed_delete(ctx.bot, chat_id, m.message_id))
+        await owner_notify(ctx, "ℹ️ Koi protected message nahi tha.")
 
 
 async def cmd_clean(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Last 500 messages ek baar mein delete karo."""
-    chat_id = update.effective_chat.id
-
-    if not await is_allowed(update, ctx):
-        asyncio.create_task(delayed_delete(ctx.bot, chat_id, update.message.message_id))
-        return
-
+    chat_id    = update.effective_chat.id
     current_id = update.message.message_id
-
-    # Command message pehle delete karo
     await try_delete(ctx.bot, chat_id, current_id)
 
-    # Last 500 messages delete karo
-    tasks = []
-    for mid in range(current_id - 1, max(current_id - 500, 0), -1):
-        if not is_protected(chat_id, mid):
-            tasks.append(try_delete(ctx.bot, chat_id, mid))
+    if not await is_allowed(update, ctx):
+        return
 
-    # Batch mein delete karo — flood se bachne ke liye
-    batch_size = 20
-    for i in range(0, len(tasks), batch_size):
-        await asyncio.gather(*tasks[i:i+batch_size])
-        await asyncio.sleep(0.5)
+    await owner_notify(ctx, "🧹 Cleaning shuru ho raha hai...")
+
+    deleted = 0
+    for mid in range(current_id - 1, max(current_id - 500, 0), -1):
+        if is_protected(chat_id, mid):
+            continue
+        try:
+            await ctx.bot.delete_message(chat_id, mid)
+            deleted += 1
+            await asyncio.sleep(0.05)
+        except Exception:
+            pass
+
+    await owner_notify(ctx, f"✅ Clean complete! <b>{deleted}</b> messages delete kiye.")
 
 
 async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
+    await try_delete(ctx.bot, chat_id, update.message.message_id)
+
     pid = protected.get(str(chat_id))
-
     if pid:
-        text = (f"🛡 Protected Message ID: <code>{pid}</code>\n"
-                f"⏱ Auto-delete: {DELETE_AFTER} seconds")
+        text = (f"🛡 Protected ID: <code>{pid}</code>\n"
+                f"⏱ Auto-delete: <b>{DELETE_AFTER}s</b>")
     else:
-        text = (f"ℹ️ Koi protected message nahi hai\n"
-                f"⏱ Auto-delete: {DELETE_AFTER} seconds")
+        text = (f"ℹ️ Koi protected message nahi\n"
+                f"⏱ Auto-delete: <b>{DELETE_AFTER}s</b>")
 
-    m = await update.message.reply_text(text, parse_mode="HTML")
-    asyncio.create_task(delayed_delete(ctx.bot, chat_id, update.message.message_id))
-    asyncio.create_task(delayed_delete(ctx.bot, chat_id, m.message_id))
+    await owner_notify(ctx, text)
 
 
 async def cmd_settime(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Delete time change karo — /settime 120 (seconds mein)"""
     global DELETE_AFTER
     chat_id = update.effective_chat.id
+    await try_delete(ctx.bot, chat_id, update.message.message_id)
 
     if not await is_allowed(update, ctx):
-        asyncio.create_task(delayed_delete(ctx.bot, chat_id, update.message.message_id))
         return
 
     try:
         secs = int(ctx.args[0])
-        if secs < 10:
-            secs = 10
+        secs = max(10, secs)
         DELETE_AFTER = secs
-        m = await update.message.reply_text(
-            f"✅ Ab messages {DELETE_AFTER} seconds baad delete honge."
-        )
+        await owner_notify(ctx, f"✅ Ab messages <b>{DELETE_AFTER} seconds</b> baad delete honge!")
     except Exception:
-        m = await update.message.reply_text(
-            "❌ Format: /settime 60\n(seconds mein likho)"
-        )
-
-    asyncio.create_task(delayed_delete(ctx.bot, chat_id, update.message.message_id))
-    asyncio.create_task(delayed_delete(ctx.bot, chat_id, m.message_id))
+        await owner_notify(ctx, "❌ Format: <code>/settime 60</code>\n(seconds mein likho)")
 
 
 # ══════════════════════════════════════════════════
@@ -185,15 +167,12 @@ async def cmd_settime(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 # ══════════════════════════════════════════════════
 
 async def handle_all(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    """Har message — admin ka, user ka, bot ka — sab 60s baad delete."""
     msg = update.effective_message
     if not msg:
         return
-
     chat_id = msg.chat_id
     msg_id  = msg.message_id
 
-    # Protected message skip karo
     if is_protected(chat_id, msg_id):
         return
 
@@ -207,8 +186,8 @@ async def handle_all(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 def main():
     print(f"\n{'='*45}")
     print(f"  Auto Delete Bot  |  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"  Owner ID: {OWNER_ID}")
-    print(f"  Delete after: {DELETE_AFTER} seconds")
+    print(f"  Owner ID : {OWNER_ID}")
+    print(f"  Delete   : {DELETE_AFTER}s")
     print(f"{'='*45}\n")
 
     app = Application.builder().token(BOT_TOKEN).build()
@@ -218,8 +197,6 @@ def main():
     app.add_handler(CommandHandler("clean",   cmd_clean))
     app.add_handler(CommandHandler("status",  cmd_status))
     app.add_handler(CommandHandler("settime", cmd_settime))
-
-    # Sabke messages pakdo
     app.add_handler(MessageHandler(filters.ALL, handle_all))
 
     print("✅ Bot polling...")
